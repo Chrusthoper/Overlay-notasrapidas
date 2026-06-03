@@ -19,7 +19,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	m := newModel(notesDir, 80)
+	m := newModel(notesDir)
 	m.files = files
 
 	p := tea.NewProgram(m, tea.WithAltScreen())

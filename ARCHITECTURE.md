@@ -2,95 +2,160 @@
 
 ## Visión General
 
-Aplicación de terminal (TUI) para explorar y planificar notas en formato Markdown, inspirada en Obsidian. Construida en Go con el ecosistema Charm.
+Aplicación de terminal (TUI) para explorar, planificar y editar notas en formato Markdown, inspirada en Obsidian. Construida en Go con el ecosistema Charm. Soporta navegación, ejecución de tareas y edición inline.
 
 ## Stack Tecnológico
 
 | Biblioteca | Versión | Rol |
 |---|---|---|
-| bubbletea | v1.3.x | Ciclo de vida, estado, manejo de eventos |
+| bubbletea | v1.3.x | Ciclo de vida, estado, máquina de estados |
 | lipgloss | v1.1.x | Layout, estilos visuales, paneles |
 | glamour | v1.0.x | Renderizado de Markdown a terminal |
+| bubbles | v1.0.x | Componente textinput para edición inline |
 
 ## Estructura de Archivos
 
 ```
 notas/
-├── main.go         # Entry point. Inicializa el programa Bubble Tea.
-├── model.go        # Modelo principal (estado). Implementa tea.Model.
-├── ui.go           # Renderizado visual. Layout con Lip Gloss.
-├── markdown.go     # Lectura y escaneo de archivos .md locales.
-├── go.mod / go.sum # Dependencias del módulo.
-├── ARCHITECTURE.md # Este archivo. Documentación viva del proyecto.
-└── notes/          # Carpeta por defecto con notas .md de ejemplo.
+├── main.go         # Entry point.
+├── model.go        # Modelo, máquina de estados (appMode), lógica de interacción.
+├── ui.go           # Layout visual, renderizado por modo, barra de estado.
+├── markdown.go     # Parseo, renderizado, toggle de tareas, edición de líneas.
+├── go.mod / go.sum
+├── ARCHITECTURE.md
+└── notes/
     ├── bienvenida.md
     ├── ideas.md
-    └── tareas.md
+    ├── tareas.md
+    └── sprint.md
 ```
+
+## Layout Visual
+
+```
+┌─────────────────┬────────────────────────────────┐
+│  📂 Notas       │  📄 Vista Previa               │
+│                 │  (raw con cursor en ModeExec)   │  70%
+│  > tareas       │  ❯ - [ ] Implementar búsqueda   │  del
+│    sprint       │    - [x] Parser de front matter │  alto
+│    bienvenida   │                                │
+│    ideas        │                                │
+├─────────────────┴────────────────────────────────┤
+│  📊 Planificación / Línea de Tiempo              │  30%
+│  Duración: 5 días  [██████░░░░]  60%             │  del
+│                                                   │  alto
+├───────────────────────────────────────────────────┤
+│ [EXEC]  tareas  ✓ 2/5                            │  Status
+└───────────────────────────────────────────────────┘
+```
+
+## Máquina de Estados
+
+| Modo | Descripción | Entrada | Salida |
+|---|---|---|---|
+| **ModeNav** | Navegación entre notas | Por defecto | `Tab` → ModeExec |
+| **ModeExec** | Cursor de línea en preview | `Tab` desde ModeNav | `Esc` → ModeNav, `e` → ModeEdit |
+| **ModeEdit** | Edición inline de una línea | `e` desde ModeExec | `Enter` → ModeExec, `Esc` → ModeExec |
+
+### Controles por Modo
+
+**ModeNav:**
+| Tecla | Acción |
+|---|---|
+| ↑ / k | Nota anterior |
+| ↓ / j | Nota siguiente |
+| Tab | Entrar a ModeExec |
+| q / Ctrl+C | Salir |
+
+**ModeExec:**
+| Tecla | Acción |
+|---|---|
+| ↑ / k | Línea arriba |
+| ↓ / j | Línea abajo |
+| Espacio | Tildar/destildar tarea (`- [ ]` ↔ `- [x]`) |
+| e | Editar línea activa (→ ModeEdit) |
+| Tab | Volver a ModeNav |
+| Esc | Volver a ModeNav |
+
+**ModeEdit:**
+| Tecla | Acción |
+|---|---|
+| Enter | Confirmar edición y guardar |
+| Esc | Cancelar edición |
+| (teclas) | Escribir en textinput |
 
 ## Responsabilidades por Archivo
 
 ### `main.go`
 - Parsea argumentos (directorio de notas opcional).
 - Escanea archivos `.md` al inicio.
-- Crea el modelo con el renderer de Glamour pre-inicializado.
-- Inicializa y ejecuta `tea.Program` con pantalla alternativa (`AltScreen`).
+- Crea el modelo con modo `ModeNav` (lazy loading).
 
 ### `model.go`
-- Define el struct `model` con todo el estado de la aplicación.
-- Almacena el renderer `*glamour.TermRenderer` reutilizable.
-- Implementa `Init()`, `Update()`, `View()` de `tea.Model`.
-- Maneja eventos de teclado (navegación ↑↓/jk, salir q/Ctrl+C).
-- Maneja `tea.WindowSizeMsg`: recrea el renderer con el nuevo ancho.
-- **Carga asíncrona**: al mover el cursor, dispara `loadNoteCmd` (tea.Cmd) que lee y renderiza en background.
-- Al recibir `markdownLoadedMsg`, actualiza el panel derecho sin bloquear la UI.
+- Define `appMode` (`ModeNav`, `ModeExec`, `ModeEdit`).
+- Struct `model` con estado completo: cursor de nota, cursor de línea, modo, textinput, rawLines, meta.
+- `updateNavExec()`: lógica de navegación y ejecución (toggle tasks).
+- `updateEdit()`: delega al textinput, Enter guarda línea, Esc cancela.
+- Helpers: `taskCounts()`, `activeFileName()`, `modeString()`.
 
 ### `ui.go`
-- Renderiza el layout de dos paneles con `lipgloss.JoinHorizontal`.
-- Panel izquierdo (1/3): lista de archivos con cursor y scroll.
-- Panel derecho (2/3): vista previa del contenido.
-- Define estilos visuales (colores, bordes, tipografía).
+- Layout de 3 filas: paneles superiores (70%), planificación (30%), barra de estado (1 línea).
+- `renderRawLines()`: dibuja contenido raw con highlight de línea activa y textinput embebido.
+- `renderStatusBar()`: muestra modo, archivo activo y contador de tareas.
+- En `ModeNav` muestra contenido Glamour renderizado; en `ModeExec`/`ModeEdit` muestra raw con cursor.
 
 ### `markdown.go`
-- `scanNotes(dir)`: lee el directorio y devuelve archivos `.md`.
-- `newRenderer(width)`: crea un `*glamour.TermRenderer` con tema oscuro automático y word-wrap al ancho dado. Se llama una sola vez (o al resize).
-- `loadNoteCmd(notesDir, filename, renderer)`: retorna un `tea.Cmd` que lee el archivo y lo renderiza con Glamour **en segundo plano**, devolviendo un `markdownLoadedMsg`.
+- `parseMeta()`: parsea front matter YAML.
+- `loadNoteCmd()`: carga asíncrona, devuelve contenido renderizado + rawLines + meta.
+- `toggleTask()`: intercambia `- [ ]` ↔ `- [x]` en la línea indicada y guarda archivo.
+- `replaceLine()`: reemplaza una línea del body y guarda archivo.
+- `rebuildFile()`: reconstruye archivo con front matter + body modificado.
+- `countTasks()`: cuenta tareas completadas vs total en un slice de líneas.
 
-## Estado Actual — Paso 2.1 (Optimización)
+## Formato de Metadatos
+
+```yaml
+---
+duracion: 5
+progreso: 60
+---
+
+# Contenido de la nota...
+```
+
+## Estado Actual — Paso 4 (Interactividad Total)
 
 - [x] Estructura modular creada.
-- [x] Layout responsivo de dos paneles con Lip Gloss.
-- [x] Lista de archivos `.md` con navegación (↑↓ / j/k).
-- [x] Vista previa del archivo seleccionado con renderizado Markdown (Glamour).
-- [x] Scroll automático en la lista de archivos.
-- [x] Soporte para directorio personalizado vía argumento.
-- [x] Word-wrap responsivo al redimensionar la terminal.
-- [x] **Renderer de Glamour reutilizable** (singleton, inicializado una vez).
-- [x] **Carga asíncrona** con `tea.Cmd`: lectura de disco y renderizado fuera del ciclo `Update`.
-- [x] Indicador de carga visual mientras se renderiza.
+- [x] Layout responsivo de 3 paneles + barra de estado.
+- [x] Lista de archivos `.md` con navegación.
+- [x] Vista previa con renderizado Markdown (Glamour).
+- [x] Panel de planificación con barra de progreso.
+- [x] Parser de front matter YAML.
+- [x] Carga asíncrona con `tea.Cmd`.
+- [x] **Máquina de estados**: ModeNav, ModeExec, ModeEdit.
+- [x] **Cursor de línea** visual en ModeExec (highlight).
+- [x] **Toggle de tareas** con Espacio (guarda en `.md` real).
+- [x] **Edición inline** con bubbles/textinput (Enter guarda, Esc cancela).
+- [x] **Barra de estado** con modo, archivo y contador de tareas.
 
 ## Decisiones de Diseño
 
-- El renderer de Glamour se almacena como `*glamour.TermRenderer` en el modelo y se recrea solo al cambiar el tamaño de la terminal.
-- La carga de notas es asíncrona: `Update()` no bloquea. El cursor se mueve instantáneamente y el contenido llega vía `markdownLoadedMsg`.
-- El modelo usa `loading bool` para mostrar un indicador visual mientras la nota se carga en background.
+- **Arranque lazy**: sin renderer ni contenido al inicio.
+- **Modos separados**: j/k cambia de nota en ModeNav, de línea en ModeExec. Sin conflicto.
+- **Vista dual**: ModeNav usa Glamour renderizado; ModeExec/ModeEdit usa líneas raw para permitir cursor y edición precisa.
+- **Guardado directo**: toggle y edición escriben el archivo `.md` inmediatamente y recargan la nota.
+- **Status bar**: altura fija de 1 línea, siempre visible, no interfiere con los paneles.
 
 ## Próximos Pasos
 
-- [ ] **Paso 3**: Creación y edición de notas desde la TUI.
-- [ ] **Paso 4**: Búsqueda y filtrado de notas.
-- [ ] **Paso 5**: Sistema de tags y enlaces entre notas.
-
-## Controles
-
-| Tecla | Acción |
-|---|---|
-| ↑ / k | Mover cursor arriba |
-| ↓ / j | Mover cursor abajo |
-| q / Ctrl+C | Salir |
+- [ ] **Paso 5**: Búsqueda y filtrado de notas.
+- [ ] **Paso 6**: Sistema de tags y enlaces entre notas.
+- [ ] **Paso 7**: Creación de nuevas notas desde la TUI.
 
 ## Convenciones
 
-- Las notas se almacenan como archivos `.md` en la carpeta `notes/` (o la pasada como argumento).
-- El layout se ajusta automáticamente al tamaño de la terminal.
+- Las notas se almacenan como `.md` en `notes/` (o directorio pasado como argumento).
+- Layout responsivo al tamaño de la terminal.
 - Colores compatibles con terminales de 256 colores.
+- Metadatos opcionales en YAML front matter.
+- Tareas en formato GitHub: `- [ ]` y `- [x]`.
