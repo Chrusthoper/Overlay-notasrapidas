@@ -19,12 +19,8 @@ func main() {
 		os.Exit(1)
 	}
 
-	m := newModel(notesDir)
+	m := newModel(notesDir, 80)
 	m.files = files
-
-	if len(files) > 0 {
-		m.loadSelected()
-	}
 
 	p := tea.NewProgram(m, tea.WithAltScreen())
 	if _, err := p.Run(); err != nil {

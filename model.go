@@ -1,23 +1,35 @@
 package main
 
-import "github.com/charmbracelet/bubbletea"
+import (
+	"github.com/charmbracelet/glamour"
+	tea "github.com/charmbracelet/bubbletea"
+)
 
 type model struct {
-	files    []string
-	cursor   int
-	content  string
-	notesDir string
-	width    int
-	height   int
+	files           []string
+	cursor          int
+	renderedContent string
+	notesDir        string
+	width           int
+	height          int
+	rightPanelWidth int
+	loading         bool
+	renderer        *glamour.TermRenderer
 }
 
-func newModel(notesDir string) model {
+func newModel(notesDir string, width int) model {
+	rightWidth := width - width/3 - 4
 	return model{
-		notesDir: notesDir,
+		notesDir:        notesDir,
+		rightPanelWidth: rightWidth,
+		renderer:        newRenderer(rightWidth),
 	}
 }
 
 func (m model) Init() tea.Cmd {
+	if len(m.files) > 0 {
+		return loadNoteCmd(m.notesDir, m.files[m.cursor], m.renderer)
+	}
 	return nil
 }
 
@@ -26,6 +38,16 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
+		m.rightPanelWidth = m.width - m.width/3 - 4
+		m.renderer = newRenderer(m.rightPanelWidth)
+		if m.renderedContent != "" {
+			return m, loadNoteCmd(m.notesDir, m.files[m.cursor], m.renderer)
+		}
+		return m, nil
+
+	case markdownLoadedMsg:
+		m.loading = false
+		m.renderedContent = msg.content
 		return m, nil
 
 	case tea.KeyMsg:
@@ -36,31 +58,20 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "up", "k":
 			if m.cursor > 0 {
 				m.cursor--
-				m.loadSelected()
+				m.loading = true
+				return m, loadNoteCmd(m.notesDir, m.files[m.cursor], m.renderer)
 			}
 
 		case "down", "j":
 			if m.cursor < len(m.files)-1 {
 				m.cursor++
-				m.loadSelected()
+				m.loading = true
+				return m, loadNoteCmd(m.notesDir, m.files[m.cursor], m.renderer)
 			}
 		}
 	}
 
 	return m, nil
-}
-
-func (m *model) loadSelected() {
-	if len(m.files) == 0 {
-		m.content = ""
-		return
-	}
-	content, err := readNote(m.notesDir, m.files[m.cursor])
-	if err != nil {
-		m.content = "Error al leer el archivo."
-		return
-	}
-	m.content = content
 }
 
 func (m model) View() string {

@@ -33,13 +33,17 @@ notas/
 ### `main.go`
 - Parsea argumentos (directorio de notas opcional).
 - Escanea archivos `.md` al inicio.
+- Crea el modelo con el renderer de Glamour pre-inicializado.
 - Inicializa y ejecuta `tea.Program` con pantalla alternativa (`AltScreen`).
 
 ### `model.go`
 - Define el struct `model` con todo el estado de la aplicación.
+- Almacena el renderer `*glamour.TermRenderer` reutilizable.
 - Implementa `Init()`, `Update()`, `View()` de `tea.Model`.
 - Maneja eventos de teclado (navegación ↑↓/jk, salir q/Ctrl+C).
-- Maneja `tea.WindowSizeMsg` para layout responsivo.
+- Maneja `tea.WindowSizeMsg`: recrea el renderer con el nuevo ancho.
+- **Carga asíncrona**: al mover el cursor, dispara `loadNoteCmd` (tea.Cmd) que lee y renderiza en background.
+- Al recibir `markdownLoadedMsg`, actualiza el panel derecho sin bloquear la UI.
 
 ### `ui.go`
 - Renderiza el layout de dos paneles con `lipgloss.JoinHorizontal`.
@@ -49,21 +53,30 @@ notas/
 
 ### `markdown.go`
 - `scanNotes(dir)`: lee el directorio y devuelve archivos `.md`.
-- `readNote(dir, filename)`: lee el contenido de un archivo.
-- Preparado para integrar Glamour para renderizado enriquecido.
+- `newRenderer(width)`: crea un `*glamour.TermRenderer` con tema oscuro automático y word-wrap al ancho dado. Se llama una sola vez (o al resize).
+- `loadNoteCmd(notesDir, filename, renderer)`: retorna un `tea.Cmd` que lee el archivo y lo renderiza con Glamour **en segundo plano**, devolviendo un `markdownLoadedMsg`.
 
-## Estado Actual — Paso 1
+## Estado Actual — Paso 2.1 (Optimización)
 
 - [x] Estructura modular creada.
 - [x] Layout responsivo de dos paneles con Lip Gloss.
 - [x] Lista de archivos `.md` con navegación (↑↓ / j/k).
-- [x] Vista previa del archivo seleccionado (texto plano).
+- [x] Vista previa del archivo seleccionado con renderizado Markdown (Glamour).
 - [x] Scroll automático en la lista de archivos.
 - [x] Soporte para directorio personalizado vía argumento.
+- [x] Word-wrap responsivo al redimensionar la terminal.
+- [x] **Renderer de Glamour reutilizable** (singleton, inicializado una vez).
+- [x] **Carga asíncrona** con `tea.Cmd`: lectura de disco y renderizado fuera del ciclo `Update`.
+- [x] Indicador de carga visual mientras se renderiza.
+
+## Decisiones de Diseño
+
+- El renderer de Glamour se almacena como `*glamour.TermRenderer` en el modelo y se recrea solo al cambiar el tamaño de la terminal.
+- La carga de notas es asíncrona: `Update()` no bloquea. El cursor se mueve instantáneamente y el contenido llega vía `markdownLoadedMsg`.
+- El modelo usa `loading bool` para mostrar un indicador visual mientras la nota se carga en background.
 
 ## Próximos Pasos
 
-- [ ] **Paso 2**: Integrar Glamour para renderizado Markdown enriquecido.
 - [ ] **Paso 3**: Creación y edición de notas desde la TUI.
 - [ ] **Paso 4**: Búsqueda y filtrado de notas.
 - [ ] **Paso 5**: Sistema de tags y enlaces entre notas.

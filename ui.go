@@ -96,10 +96,12 @@ func renderPreview(m model, width, height int) string {
 
 	if len(m.files) == 0 {
 		content = placeholderStyle.Render("\n  Selecciona una nota para ver su contenido...")
-	} else if m.content == "" {
-		content = placeholderStyle.Render("\n  Cargando contenido...")
+	} else if m.loading {
+		content = placeholderStyle.Render("\n  ⣾ Cargando...")
+	} else if m.renderedContent == "" {
+		content = placeholderStyle.Render("\n  Selecciona una nota para ver su contenido...")
 	} else {
-		content = m.content
+		content = m.renderedContent
 	}
 
 	header := titleStyle.Render(" 📄 Vista Previa ")

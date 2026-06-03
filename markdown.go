@@ -4,9 +4,16 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/charmbracelet/glamour"
+	tea "github.com/charmbracelet/bubbletea"
 )
 
 const defaultNotesDir = "notes"
+
+type markdownLoadedMsg struct {
+	content string
+}
 
 func scanNotes(dir string) ([]string, error) {
 	entries, err := os.ReadDir(dir)
@@ -26,11 +33,39 @@ func scanNotes(dir string) ([]string, error) {
 	return files, nil
 }
 
-func readNote(dir, filename string) (string, error) {
-	path := filepath.Join(dir, filename)
-	content, err := os.ReadFile(path)
-	if err != nil {
-		return "", err
+func newRenderer(width int) *glamour.TermRenderer {
+	w := width - 6
+	if w < 20 {
+		w = 20
 	}
-	return string(content), nil
+
+	r, err := glamour.NewTermRenderer(
+		glamour.WithAutoStyle(),
+		glamour.WithWordWrap(w),
+	)
+	if err != nil {
+		return nil
+	}
+	return r
+}
+
+func loadNoteCmd(notesDir, filename string, renderer *glamour.TermRenderer) tea.Cmd {
+	return func() tea.Msg {
+		path := filepath.Join(notesDir, filename)
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			return markdownLoadedMsg{content: "Error al leer el archivo."}
+		}
+
+		if renderer == nil {
+			return markdownLoadedMsg{content: string(raw)}
+		}
+
+		rendered, err := renderer.Render(string(raw))
+		if err != nil {
+			return markdownLoadedMsg{content: string(raw)}
+		}
+
+		return markdownLoadedMsg{content: strings.TrimSpace(rendered)}
+	}
 }
