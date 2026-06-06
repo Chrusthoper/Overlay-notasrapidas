@@ -5,5 +5,8 @@ edition = "2021"
 
 [dependencies]
 overlay-core = { path = "../core" }
+chrono = "0.4"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 iced = "0.14"
 iced_layershell = "0.18"

@@ -197,3 +197,23 @@ pub fn open_tui() -> Result<String, String> {
         Err(e) => Err(format!("Error al abrir TUI: {}", e)),
     }
 }
+
+pub fn open_tui_with_file(filename: &str) -> Result<String, String> {
+    let tui_path = "/home/chs/notas/notas";
+    let notes_dir = "/home/chs/notas/notes";
+    let full_path = format!("{}/{}", notes_dir, filename);
+
+    let result = Command::new("foot")
+        .args(["-e", "sh", "-c", &format!("{} {}", tui_path, full_path)])
+        .spawn()
+        .or_else(|_| {
+            Command::new("foot")
+                .args(["-e", tui_path])
+                .spawn()
+        });
+
+    match result {
+        Ok(_) => Ok("TUI abierto".to_string()),
+        Err(e) => Err(format!("Error al abrir TUI: {}", e)),
+    }
+}

@@ -152,10 +152,94 @@ progreso: 60
 - [ ] **Paso 6**: Sistema de tags y enlaces entre notas.
 - [ ] **Paso 7**: Creación de nuevas notas desde la TUI.
 
-## Convenciones
+---
 
-- Las notas se almacenan como `.md` en `notes/` (o directorio pasado como argumento).
-- Layout responsivo al tamaño de la terminal.
-- Colores compatibles con terminales de 256 colores.
-- Metadatos opcionales en YAML front matter.
-- Tareas en formato GitHub: `- [ ]` y `- [x]`.
+# Overlay — Notas Flotantes
+
+## Visión General
+
+Overlay flotante para Wayland (Hyprland) que permite capturar notas rápidas sin abandonar el contexto de trabajo. Dos implementaciones: iced (actual) y Tauri+Svelte (legacy).
+
+## Stack Tecnológico
+
+| Componente | Tecnología | Rol |
+|---|---|---|
+| UI activa | iced 0.14 + iced_layershell 0.18 | Overlay nativo Wayland layer shell |
+| Lógica compartida | Rust lib crate (`core/`) | Config, notas, TUI launch |
+| Persistencia | serde + serde_json | Panel state en `~/.config/overlay/panel.json` |
+| Legacy UI | Tauri 2 + Svelte (`src-tauri/`) | Preservada, no se modifica |
+
+## Estructura de Archivos
+
+```
+overlay/
+├── core/
+│   ├── Cargo.toml
+│   └── src/lib.rs          # Lógica compartida: Config, NoteInfo, append, read, TUI
+├── iced-ui/
+│   ├── Cargo.toml           # overlay-core, iced, iced_layershell, chrono, serde, serde_json
+│   └── src/main.rs          # Overlay iced: UI completa, eventos, drag, sesión, ctx menu
+├── src-tauri/               # Legacy Tauri 2 + Svelte (preservado)
+├── src/App.svelte           # Legacy frontend
+└── ARCHITECTURE.md
+```
+
+## Layout — 4 Secciones
+
+```
+┌──────────────────────────────────────┐
+│ ❯ [input]          → destino-actual  │ 40px
+├──────────────────────────────────────┤
+│ [+ Nueva nota]              [⌨ TUI] │ 40px
+├──────────────────────────────────────┤
+│ ● 📌 tareas           ✓ 2/5         │
+│ ● 📥 hoy 14h30  sesión               │ Variable
+│ ● ideas              hace 2m         │ (scroll)
+│ ● sprint             ayer            │
+├──────────────────────────────────────┤
+│ [Enter] enviar · [Esc] limpiar       │ 32px
+└──────────────────────────────────────┘
+```
+
+## Nota de Sesión
+
+Cada instancia del overlay crea una nota de sesión `inbox-YYYY-MM-DD-HHhMM.md`. Default destino del input. Escape resetea a sesión. Se muestra con indicador azul y `📥 hoy 14h30`.
+
+## Lista de Notas
+
+- **Orden**: pinned primero → sesión activa → resto por mtime desc
+- **Filtro**: excluye notas en `hidden`
+- **Indicadores**: ● verde=seleccionada, ● azul=sesión, ● gris=otra
+- **Click simple**: cambia `selected_file` (destino del input)
+- **Botón ⋮**: abre menú contextual
+
+## Menú Contextual
+
+Acciones por nota:
+- 👁 Ver en TUI → `open_tui_with_file()`
+- 📌 Fijar arriba / Desfijar → toggle en `pinned`
+- ✕ Quitar del panel → agrega a `hidden`
+- 🗑 Eliminar nota → confirmación → borra `.md`
+
+## Modos de Overlay
+
+| Modo | Comportamiento del input |
+|---|---|
+| `Normal` | Placeholder "Escribe y presiona Enter...", Enter = append a nota |
+| `CreatingNote` | Placeholder "Título de la nota...", Enter = crea `.md` vacío |
+
+## Persistencia — panel.json
+
+```json
+{
+  "pinned": ["tareas", "proyecto"],
+  "hidden": ["bienvenida"]
+}
+```
+Ubicación: `~/.config/overlay/panel.json`
+
+## Eventos y Subscriptions
+
+- **Escape**: cierra ctx_menu → cancela CreatingNote → limpia input + resetea a sesión
+- **Drag**: `CursorMoved` + `ButtonPressed(Left)` + `ButtonReleased(Left)` → `MarginChange` layer shell
+- **WAYLAND_DEBUG=0**: suprime warnings de protocolos no implementados
