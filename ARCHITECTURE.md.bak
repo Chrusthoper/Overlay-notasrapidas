@@ -1,0 +1,163 @@
+# ARCHITECTURE.md — Overlay de Escritorio
+
+## Visión General
+
+Overlay de escritorio minimalista para capturar notas rápidas y acceder al TUI. Se posiciona como una ventana flotante siempre visible en la esquina superior derecha. Comparte la carpeta de notas con el TUI en Go.
+
+## Dos Binarios
+
+| Binario | Stack | Estado | Ubicación |
+|---|---|---|---|
+| `overlay` | Tauri 2 + Svelte + WebKitGTK | Legacy (teclado inconsistente) | `src-tauri/` |
+| `overlay-iced` | iced + iced_layershell + wgpu | **Activo** | `iced-ui/` |
+
+## Estructura del Repositorio
+
+```
+overlay/
+├── core/                  # Crate compartido (Rust puro)
+│   ├── Cargo.toml
+│   └── src/lib.rs         # NoteInfo, get_recent_notes, append_to_note, read_note, open_tui, Config
+├── iced-ui/               # Overlay activo (iced + Wayland layer shell)
+│   ├── Cargo.toml
+│   └── src/main.rs         # UI nativa con iced
+├── src-tauri/              # Overlay legacy (Tauri 2 + Svelte)
+│   ├── Cargo.toml
+│   ├── config.toml         # notes_path = "~/notas/notes"
+│   ├── tauri.conf.json
+│   └── src/main.rs         # Comandos Tauri (usa lógica inline, no core/)
+├── src/                    # Frontend Svelte (legacy)
+│   ├── main.js
+│   └── App.svelte
+└── ARCHITECTURE.md
+```
+
+## Crate `core/` — Lógica Compartida
+
+Rust puro, sin dependencias de UI. Usado por `iced-ui`.
+
+| Función | Descripción |
+|---|---|
+| `load_config_embedded(content)` | Parsea TOML embebido |
+| `resolve_notes_path(config)` | Expande `~` y retorna PathBuf |
+| `get_recent_notes(notes_dir)` | Top 5 notas por fecha de modificación |
+| `append_to_note(notes_dir, filename, content)` | Append preservando front matter |
+| `read_note(notes_dir, filename)` | Lee contenido completo |
+| `open_tui()` | Lanza `foot -e /home/chs/notas/notas` |
+
+## Stack Tecnológico — iced-ui (Activo)
+
+| Componente | Versión | Rol |
+|---|---|---|
+| iced | 0.14 | Framework GUI (Elm architecture) |
+| iced_layershell | 0.18 | Wayland layer shell (overlay nativo) |
+| overlay-core | local | Lógica de archivos compartida |
+
+## Ventana Overlay (iced + Wayland Layer Shell)
+
+```rust
+LayerShellSettings {
+    size: Some((428, 248)),
+    anchor: Anchor::Top | Anchor::Right,
+    layer: Layer::Overlay,
+    keyboard_interactivity: KeyboardInteractivity::OnDemand,
+    exclusive_zone: 0,
+}
+```
+
+| Propiedad | Valor |
+|---|---|
+| Tamaño | 428×248 |
+| Posición | Esquina superior derecha (anchor) |
+| Capa | Overlay (siempre al frente) |
+| Decoraciones | Ninguna |
+| Transparencia | Soportada (fondo RGBA) |
+| Teclado | OnDemand (solo cuando tiene foco) |
+
+## Layout del Overlay
+
+### Modo Compacto (428×248)
+
+```
+┌─────────────────────────────────────────────┐
+│  ❯ [Escribe y presiona Enter...]      ✓    │  Input
+├─────────────────────────────────────────────┤
+│  ┌───────┐  ┌───────┐  ┌───────┐           │
+│  │tareas │  │sprint │  │bienve.│           │  Grid 3×2
+│  │✓ 2/5  │  │✓ 1/5  │  │hace 2d│           │
+│  ├───────┤  ├───────┤  ├───────┤           │
+│  │ideas  │  │inbox  │  │⌨ TUI  │           │
+│  │hace 3d│  │✓ 0/2  │  │terminal│           │
+├─────────────────────────────────────────────┤
+│  [Enter] enviar · [Esc] limpiar             │  Hints
+└─────────────────────────────────────────────┘
+```
+
+### Modo Expandido (vista de nota)
+
+Al hacer click en una nota del grid, muestra contenido del `.md` con botón cerrar.
+
+## Colores
+
+| Elemento | Color |
+|---|---|
+| Fondo | `rgba(18, 18, 18, 0.92)` |
+| Borde | `rgba(255, 255, 255, 0.12)` |
+| Texto | `rgba(255, 255, 255, 0.85)` |
+| Muted | `rgba(255, 255, 255, 0.35)` |
+| Acento verde | `#1D9E75` |
+| Acento purple | `rgba(83, 74, 183, 0.15)` |
+| Border radius | `10px` |
+
+## Relación con el TUI en Go
+
+```
+~/notas/notes/  ←  carpeta compartida
+    ↑                    ↑
+    │                    │
+overlay-iced         TUI (Go)
+(iced/wgpu)         (BubbleTea)
+Append rápido       Read/Render/Toggle
+Grid + Launch TUI   Planificación + Edición
+```
+
+## Reglas Hyprland 0.54 (para overlay Tauri legacy)
+
+```ini
+windowrule {
+    name = overlay-float
+    match:class = ^overlay$
+    float = yes
+    move = 100%-428 4
+    animation = popin 0
+}
+```
+
+El overlay iced usa layer shell nativo — no necesita reglas de Hyprland.
+
+## Controles
+
+| Tecla | Acción |
+|---|---|
+| Enter | Enviar texto al archivo seleccionado |
+| Escape | Limpiar input / cerrar vista expandida |
+| Click nota | Seleccionar como destino + abrir vista |
+| Click TUI | Lanzar terminal con el TUI |
+
+## Estado Actual
+
+- [x] Crate `core/` con lógica compartida.
+- [x] Overlay iced con `iced_layershell` + Wayland layer shell nativo.
+- [x] Input con teclado nativo (sin WebKitGTK).
+- [x] Grid 3×2 con notas recientes + botón TUI.
+- [x] Vista expandida al clickar nota.
+- [x] Colores y estilos replicados del diseño original.
+- [x] Ventana transparente, sin decoraciones, siempre al frente.
+- [x] Overlay Tauri preservado como legacy en `src-tauri/`.
+
+## Próximos Pasos
+
+- [ ] Vista expandida con resize de ventana (layer shell).
+- [ ] Atajos de teclado globales (hotkey para mostrar/ocultar).
+- [ ] Animaciones de transición.
+- [ ] Migrar src-tauri para usar crate core/ también.

@@ -1,0 +1,29 @@
+{
+  "$schema": "https://raw.githubusercontent.com/nicepage/nicepage.github.io/main/tauri/tauri.conf.v2.schema.json",
+  "productName": "overlay",
+  "version": "0.1.0",
+  "identifier": "com.overlay.notes",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "npm run build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "Overlay",
+        "width": 428,
+        "height": 248,
+        "alwaysOnTop": true,
+        "decorations": false,
+        "transparent": true,
+        "resizable": false,
+        "skipTaskbar": true
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  }
+}

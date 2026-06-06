@@ -1,0 +1,13 @@
+[package]
+name = "overlay"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tauri = { version = "2", features = [] }
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+dirs = "6"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
