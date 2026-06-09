@@ -217,3 +217,19 @@ pub fn open_tui_with_file(filename: &str) -> Result<String, String> {
         Err(e) => Err(format!("Error al abrir TUI: {}", e)),
     }
 }
+
+pub fn replace_line(
+    notes_dir: &std::path::PathBuf,
+    filename: &str,
+    line_index: usize,
+    new_content: &str,
+) -> Result<(), String> {
+    let path = notes_dir.join(filename);
+    let content = fs::read_to_string(&path).map_err(|e| format!("{}", e))?;
+    let mut lines: Vec<String> = content.lines().map(|l| l.to_string()).collect();
+    if line_index < lines.len() {
+        lines[line_index] = new_content.to_string();
+    }
+    let result = lines.join("\n");
+    fs::write(&path, result).map_err(|e| format!("{}", e))
+}

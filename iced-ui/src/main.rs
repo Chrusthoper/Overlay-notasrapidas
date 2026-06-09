@@ -1,4 +1,4 @@
-use iced::widget::{button, column, container, row, text, text_input, Space};
+use iced::widget::{button, column, container, row, scrollable, text, text_input, Space};
 use iced::{Background, Border, Color, Element, Event, Length, Padding, Point, Task, Theme};
 use iced_layershell::build_pattern::application;
 use iced_layershell::reexport::{Anchor, KeyboardInteractivity, Layer};
@@ -6,20 +6,21 @@ use iced_layershell::settings::LayerShellSettings;
 use iced_layershell::to_layer_message;
 use serde::{Deserialize, Serialize};
 
-use overlay_core::{append_to_note, get_recent_notes, load_config_embedded, open_tui, open_tui_with_file};
+use overlay_core::{append_to_note, get_recent_notes, load_config_embedded, open_tui, open_tui_with_file, read_note, replace_line};
 
 const CONFIG_TOML: &str = include_str!("../../src-tauri/config.toml");
 
 const BG: Color = Color { r: 18.0 / 255.0, g: 18.0 / 255.0, b: 18.0 / 255.0, a: 0.92 };
 const FG: Color = Color { r: 1.0, g: 1.0, b: 1.0, a: 0.85 };
+const FG_DIM: Color = Color { r: 1.0, g: 1.0, b: 1.0, a: 0.45 };
 const MUTED: Color = Color { r: 1.0, g: 1.0, b: 1.0, a: 0.35 };
 const GREEN: Color = Color { r: 29.0 / 255.0, g: 158.0 / 255.0, b: 117.0 / 255.0, a: 1.0 };
-const PURPLE_BG: Color = Color { r: 83.0 / 255.0, g: 74.0 / 255.0, b: 183.0 / 255.0, a: 0.15 };
 const BORDER_CLR: Color = Color { r: 1.0, g: 1.0, b: 1.0, a: 0.12 };
 const BLUE: Color = Color { r: 137.0 / 255.0, g: 180.0 / 255.0, b: 250.0 / 255.0, a: 0.8 };
-const DRAG_HINT: Color = Color { r: 1.0, g: 1.0, b: 1.0, a: 0.15 };
 const RED: Color = Color { r: 243.0 / 255.0, g: 139.0 / 255.0, b: 168.0 / 255.0, a: 1.0 };
-const ORANGE: Color = Color { r: 250.0 / 255.0, g: 179.0 / 255.0, b: 135.0 / 255.0, a: 1.0 };
+const PURPLE: Color = Color { r: 137.0 / 255.0, g: 180.0 / 250.0, b: 250.0 / 255.0, a: 0.7 };
+const EXPANDED_BG: Color = Color { r: 15.0 / 255.0, g: 15.0 / 255.0, b: 25.0 / 255.0, a: 0.97 };
+const TASK_BORDER: Color = Color { r: 137.0 / 255.0, g: 180.0 / 250.0, b: 250.0 / 255.0, a: 0.4 };
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum OverlayMode {
@@ -31,6 +32,27 @@ enum OverlayMode {
 struct CtxMenu {
     note_name: String,
     confirming_delete: bool,
+}
+
+#[derive(Debug, Clone)]
+struct TaskItem {
+    line_index: usize,
+    text: String,
+    done: bool,
+}
+
+#[derive(Debug, Clone)]
+struct ContentLine {
+    line_index: usize,
+    text: String,
+}
+
+#[derive(Debug, Clone)]
+struct EditingLine {
+    line_index: usize,
+    value: String,
+    is_task: bool,
+    was_done: bool,
 }
 
 #[derive(Serialize, Deserialize, Default)]
@@ -69,6 +91,76 @@ fn save_panel(pinned: &[String], hidden: &[String]) {
     let _ = std::fs::write(&path, serde_json::to_string_pretty(&state).unwrap_or_default());
 }
 
+fn parse_tasks(content: &str) -> Vec<TaskItem> {
+    let mut tasks = Vec::new();
+    for (i, line) in content.lines().enumerate() {
+        let trimmed = line.trim();
+        if let Some(rest) = trimmed.strip_prefix("- [x] ").or_else(|| trimmed.strip_prefix("- [X] ")) {
+            tasks.push(TaskItem { line_index: i, text: rest.to_string(), done: true });
+        } else if let Some(rest) = trimmed.strip_prefix("- [ ] ") {
+            tasks.push(TaskItem { line_index: i, text: rest.to_string(), done: false });
+        }
+    }
+    tasks
+}
+
+fn parse_content_lines(content: &str) -> Vec<ContentLine> {
+    let lines: Vec<&str> = content.lines().collect();
+    let fm_end = find_front_matter_end(content);
+    let start = if fm_end > 0 { fm_end } else { 0 };
+    let mut result = Vec::new();
+    for (i, line) in lines.iter().enumerate() {
+        if i < start {
+            continue;
+        }
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if trimmed.starts_with("- [x] ") || trimmed.starts_with("- [X] ") || trimmed.starts_with("- [ ] ") {
+            continue;
+        }
+        result.push(ContentLine { line_index: i, text: trimmed.to_string() });
+    }
+    result
+}
+
+fn find_front_matter_end(content: &str) -> usize {
+    let trimmed = content.trim_start();
+    if !trimmed.starts_with("---") { return 0; }
+    let after_first = &trimmed[3..];
+    if let Some(end) = after_first.find("\n---") {
+        let closing_line_end = end + 4;
+        let bytes = trimmed.as_bytes();
+        let mut idx = closing_line_end;
+        while idx < bytes.len() && (bytes[idx] == b'\n' || bytes[idx] == b'\r') {
+            idx += 1;
+        }
+        let prefix_len = content.len() - trimmed.len();
+        let line_count = content[..prefix_len + idx].lines().count();
+        line_count
+    } else {
+        0
+    }
+}
+
+fn toggle_task_in_file(notes_dir: &std::path::PathBuf, filename: &str, line_index: usize) -> Result<(), String> {
+    let path = notes_dir.join(filename);
+    let content = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
+    let mut lines: Vec<String> = content.lines().map(|l| l.to_string()).collect();
+    if line_index < lines.len() {
+        let line = &mut lines[line_index];
+        let trimmed = line.trim();
+        if trimmed.starts_with("- [x] ") || trimmed.starts_with("- [X] ") {
+            *line = line.replacen("- [x]", "- [ ]", 1).replacen("- [X]", "- [ ]", 1);
+        } else if trimmed.starts_with("- [ ] ") {
+            *line = line.replacen("- [ ]", "- [x]", 1);
+        }
+    }
+    let result = lines.join("\n");
+    std::fs::write(&path, result).map_err(|e| e.to_string())
+}
+
 #[to_layer_message]
 #[derive(Debug, Clone)]
 enum Message {
@@ -76,7 +168,13 @@ enum Message {
     InputSubmitted,
     NoteClicked(usize),
     NoteCtxClicked(usize),
+    TaskToggled(usize),
+    LineEditStarted(usize, bool, bool),
+    LineEditChanged(String),
+    LineEditSubmitted,
+    LineEditCancelled,
     TuiClicked,
+    TuiForNote(String),
     NewNoteClicked,
     CreateNote,
     CancelCreate,
@@ -103,12 +201,15 @@ struct Overlay {
     pinned: Vec<String>,
     hidden: Vec<String>,
     ctx_menu: Option<CtxMenu>,
+    expanded_note: Option<String>,
+    expanded_tasks: Vec<TaskItem>,
+    expanded_content_lines: Vec<ContentLine>,
+    editing_line: Option<EditingLine>,
     dragging: bool,
     drag_origin: Point,
     drag_margin_start: (i32, i32, i32, i32),
     margin: (i32, i32, i32, i32),
     last_cursor: Point,
-    window_height: u32,
 }
 
 impl Overlay {
@@ -119,7 +220,6 @@ impl Overlay {
         let now = chrono::Local::now();
         let session_file = format!("inbox-{}.md", now.format("%Y-%m-%d-%Hh%M"));
         let panel = load_panel();
-        let window_height = 248;
         Overlay {
             mode: OverlayMode::Normal,
             input_value: String::new(),
@@ -131,24 +231,23 @@ impl Overlay {
             pinned: panel.pinned,
             hidden: panel.hidden,
             ctx_menu: None,
+            expanded_note: None,
+            expanded_tasks: Vec::new(),
+            expanded_content_lines: Vec::new(),
+            editing_line: None,
             dragging: false,
             drag_origin: Point::default(),
             drag_margin_start: (0, 0, 0, 0),
             margin: (0, 0, 0, 0),
             last_cursor: Point::default(),
-            window_height,
         }
     }
 
-    fn visible_notes(&self) -> Vec<&overlay_core::NoteInfo> {
-        self.notes
+    fn sorted_visible_notes(&self) -> Vec<&overlay_core::NoteInfo> {
+        let mut vis: Vec<&overlay_core::NoteInfo> = self.notes
             .iter()
             .filter(|n| !self.hidden.contains(&n.name))
-            .collect()
-    }
-
-    fn sorted_visible_notes(&self) -> Vec<&overlay_core::NoteInfo> {
-        let mut vis: Vec<&overlay_core::NoteInfo> = self.visible_notes();
+            .collect();
         vis.sort_by(|a, b| {
             let a_pinned = self.pinned.contains(&a.name);
             let b_pinned = self.pinned.contains(&b.name);
@@ -169,13 +268,64 @@ impl Overlay {
 
     fn calc_window_height(&self) -> u32 {
         let note_count = self.sorted_visible_notes().len() as u32;
-        let list_height = note_count * 36 + 8;
-        let total = 40 + 40 + list_height + 32;
-        total.clamp(248, 480)
+        let list_height = note_count * 36;
+        let panel_height = if self.expanded_note.is_some() { 200 } else { 0 };
+        let total = 40 + 40 + list_height + panel_height + 32;
+        total.clamp(248, 520)
     }
 
     fn refresh_notes(&mut self) {
         self.notes = get_recent_notes(&self.notes_dir);
+    }
+
+    fn reload_expanded_tasks(&mut self) {
+        if let Some(ref name) = self.expanded_note {
+            let filename = format!("{}.md", name);
+            if let Ok(content) = read_note(&self.notes_dir, &filename) {
+                self.expanded_tasks = parse_tasks(&content);
+                self.expanded_content_lines = parse_content_lines(&content);
+            }
+        }
+    }
+
+    fn expand_note(&mut self, name: &str) {
+        let filename = format!("{}.md", name);
+        self.selected_file = filename.clone();
+        self.expanded_note = Some(name.to_string());
+        if let Ok(content) = read_note(&self.notes_dir, &filename) {
+            self.expanded_tasks = parse_tasks(&content);
+            self.expanded_content_lines = parse_content_lines(&content);
+        } else {
+            self.expanded_tasks = Vec::new();
+            self.expanded_content_lines = Vec::new();
+        }
+    }
+
+    fn save_editing_line(&mut self) {
+        if let Some(ref el) = self.editing_line.take() {
+            if let Some(ref name) = self.expanded_note {
+                let filename = format!("{}.md", name);
+                let new_line = if el.is_task {
+                    if el.was_done {
+                        format!("- [x] {}", el.value.trim())
+                    } else {
+                        format!("- [ ] {}", el.value.trim())
+                    }
+                } else {
+                    el.value.clone()
+                };
+                let _ = replace_line(&self.notes_dir, &filename, el.line_index, &new_line);
+                self.reload_expanded_tasks();
+                self.refresh_notes();
+            }
+        }
+    }
+
+    fn collapse_note(&mut self) {
+        self.expanded_note = None;
+        self.expanded_tasks = Vec::new();
+        self.expanded_content_lines = Vec::new();
+        self.editing_line = None;
     }
 
     fn update(&mut self, message: Message) -> Task<Message> {
@@ -195,6 +345,9 @@ impl Overlay {
                             self.status_msg = "✓".to_string();
                             self.input_value.clear();
                             self.refresh_notes();
+                            if self.expanded_note.is_some() {
+                                self.reload_expanded_tasks();
+                            }
                         }
                         Err(e) => {
                             self.status_msg = format!("✗ {}", e);
@@ -206,9 +359,15 @@ impl Overlay {
             Message::NoteClicked(idx) => {
                 let notes = self.sorted_visible_notes();
                 if idx < notes.len() {
-                    self.selected_file = format!("{}.md", notes[idx].name);
+                    let name = notes[idx].name.clone();
+                    if self.expanded_note.as_deref() == Some(&name) {
+                        self.collapse_note();
+                    } else {
+                        self.expand_note(&name);
+                    }
                 }
-                Task::none()
+                let new_h = self.calc_window_height();
+                Task::done(Message::SizeChange((428, new_h)))
             }
             Message::NoteCtxClicked(idx) => {
                 let notes = self.sorted_visible_notes();
@@ -220,8 +379,54 @@ impl Overlay {
                 }
                 Task::none()
             }
+            Message::TaskToggled(line_index) => {
+                if let Some(ref name) = self.expanded_note {
+                    let filename = format!("{}.md", name);
+                    let _ = toggle_task_in_file(&self.notes_dir, &filename, line_index);
+                    self.reload_expanded_tasks();
+                    self.refresh_notes();
+                }
+                Task::none()
+            }
+            Message::LineEditStarted(line_index, is_task, was_done) => {
+                if let Some(ref el) = self.editing_line {
+                    if el.line_index != line_index {
+                        self.save_editing_line();
+                    }
+                }
+                let value = if let Some(ref name) = self.expanded_note {
+                    let filename = format!("{}.md", name);
+                    read_note(&self.notes_dir, &filename)
+                        .ok()
+                        .and_then(|c| c.lines().nth(line_index).map(|l| l.to_string()))
+                        .unwrap_or_default()
+                } else {
+                    String::new()
+                };
+                self.editing_line = Some(EditingLine { line_index, value, is_task, was_done });
+                Task::none()
+            }
+            Message::LineEditChanged(val) => {
+                if let Some(ref mut el) = self.editing_line {
+                    el.value = val;
+                }
+                Task::none()
+            }
+            Message::LineEditSubmitted => {
+                self.save_editing_line();
+                Task::none()
+            }
+            Message::LineEditCancelled => {
+                self.editing_line = None;
+                Task::none()
+            }
             Message::TuiClicked => {
                 let _ = open_tui();
+                Task::none()
+            }
+            Message::TuiForNote(name) => {
+                let filename = format!("{}.md", name);
+                let _ = open_tui_with_file(&filename);
                 Task::none()
             }
             Message::NewNoteClicked => {
@@ -236,17 +441,26 @@ impl Overlay {
                 Task::none()
             }
             Message::EscapePressed => {
-                if self.ctx_menu.is_some() {
+                if self.editing_line.is_some() {
+                    self.editing_line = None;
+                    Task::none()
+                } else if self.ctx_menu.is_some() {
                     self.ctx_menu = None;
+                    Task::none()
+                } else if self.expanded_note.is_some() {
+                    self.collapse_note();
+                    let new_h = self.calc_window_height();
+                    Task::done(Message::SizeChange((428, new_h)))
                 } else if self.mode == OverlayMode::CreatingNote {
                     self.mode = OverlayMode::Normal;
                     self.input_value.clear();
+                    Task::none()
                 } else {
                     self.input_value.clear();
                     self.status_msg.clear();
                     self.selected_file = self.session_file.clone();
+                    Task::none()
                 }
-                Task::none()
             }
             Message::CtxViewTui(name) => {
                 let filename = format!("{}.md", name);
@@ -284,6 +498,9 @@ impl Overlay {
                 if self.selected_file == filename {
                     self.selected_file = self.session_file.clone();
                 }
+                if self.expanded_note.as_deref() == Some(&name) {
+                    self.collapse_note();
+                }
                 self.pinned.retain(|n| n != &name);
                 self.hidden.retain(|n| n != &name);
                 save_panel(&self.pinned, &self.hidden);
@@ -302,18 +519,19 @@ impl Overlay {
                 Task::none()
             }
             Message::DragMoved(x, y) => {
-                self.last_cursor = Point { x, y };
                 if self.dragging {
-                    let dx = (x - self.drag_origin.x) as i32;
-                    let dy = (y - self.drag_origin.y) as i32;
+                    let dx = (x - self.last_cursor.x) as i32;
+                    let dy = (y - self.last_cursor.y) as i32;
                     self.margin = (
-                        self.drag_margin_start.0 + dy,
-                        self.drag_margin_start.1 - dx,
+                        (self.margin.0 + dy).max(0),
+                        (self.margin.1 - dx).max(0),
                         0,
                         0,
                     );
+                    self.last_cursor = Point { x, y };
                     Task::done(Message::MarginChange(self.margin))
                 } else {
+                    self.last_cursor = Point { x, y };
                     Task::none()
                 }
             }
@@ -479,15 +697,16 @@ impl Overlay {
 
     fn view_note_list(&self) -> Element<'_, Message> {
         let notes = self.sorted_visible_notes();
-        let mut col: iced::widget::Column<'_, Message, Theme> = column![].spacing(2);
+        let mut col: iced::widget::Column<'_, Message, Theme> = column![].spacing(1);
 
         for (idx, note) in notes.iter().enumerate() {
             let filename = format!("{}.md", note.name);
             let is_selected = filename == self.selected_file;
             let is_session = filename == self.session_file;
             let is_pinned = self.pinned.contains(&note.name);
+            let is_expanded = self.expanded_note.as_deref() == Some(&note.name);
 
-            let dot_color = if is_selected {
+            let dot_color = if is_expanded {
                 GREEN
             } else if is_session {
                 BLUE
@@ -522,7 +741,9 @@ impl Overlay {
                     .spacing(2)
             )
             .on_press(Message::NoteClicked(idx))
-            .style(if is_selected {
+            .style(if is_expanded {
+                expanded_note_style
+            } else if is_selected {
                 selected_note_style
             } else {
                 note_row_style
@@ -530,10 +751,10 @@ impl Overlay {
             .width(Length::Fill)
             .padding(Padding { top: 4.0, right: 8.0, bottom: 4.0, left: 8.0 });
 
-            let ctx_btn = button(text("⋮").size(10))
+            let ctx_btn = button(text("···").size(10))
                 .on_press(Message::NoteCtxClicked(idx))
-                .style(ctx_inline_style)
-                .padding(Padding::new(2.0));
+                .style(dots_button_style)
+                .padding(Padding { top: 0.0, right: 6.0, bottom: 0.0, left: 6.0 });
 
             let row_el = row![]
                 .push(text("●").color(dot_color).size(8))
@@ -543,11 +764,161 @@ impl Overlay {
                 .align_y(iced::Alignment::Center);
 
             col = col.push(row_el);
+
+            if is_expanded {
+                col = col.push(self.view_expanded_panel());
+            }
         }
 
         container(col)
             .width(Length::Fill)
             .height(Length::Fill)
+            .into()
+    }
+
+    fn view_expanded_panel(&self) -> Element<'_, Message> {
+        let note_name = match &self.expanded_note {
+            Some(n) => n.clone(),
+            None => return Space::new().into(),
+        };
+
+        let mut panel_col: iced::widget::Column<'_, Message, Theme> = column![].spacing(4);
+
+        // Section A — content lines
+        if !self.expanded_content_lines.is_empty() {
+            let total = self.expanded_content_lines.len();
+            let visible: Vec<&ContentLine> = self.expanded_content_lines.iter().take(4).collect();
+            let has_more = total > 4;
+
+            let mut content_col: iced::widget::Column<'_, Message, Theme> = column![].spacing(2);
+            for cl in &visible {
+                let is_editing = self.editing_line.as_ref()
+                    .map(|e| e.line_index == cl.line_index)
+                    .unwrap_or(false);
+                if is_editing {
+                    let input = text_input("", &self.editing_line.as_ref().unwrap().value)
+                        .on_input(Message::LineEditChanged)
+                        .on_submit(Message::LineEditSubmitted)
+                        .style(edit_line_input_style)
+                        .width(Length::Fill)
+                        .size(11);
+                    content_col = content_col.push(input);
+                } else {
+                    let line_btn = button(text(&cl.text).color(FG_DIM).size(11))
+                        .on_press(Message::LineEditStarted(cl.line_index, false, false))
+                        .style(content_line_style)
+                        .width(Length::Fill)
+                        .padding(Padding { top: 1.0, right: 4.0, bottom: 1.0, left: 4.0 });
+                    content_col = content_col.push(line_btn);
+                }
+            }
+            if has_more {
+                let remaining = total - 4;
+                content_col = content_col.push(
+                    text(format!("  ··· {} líneas más", remaining)).color(MUTED).size(11)
+                );
+            }
+
+            panel_col = panel_col.push(content_col);
+
+            if !self.expanded_tasks.is_empty() {
+                panel_col = panel_col.push(
+                    container(Space::new().height(Length::Fixed(1.0)))
+                        .style(separator_style)
+                        .width(Length::Fill)
+                );
+            }
+        }
+
+        // Section B — tasks
+        let mut tasks_col: iced::widget::Column<'_, Message, Theme> = column![].spacing(2);
+
+        if self.expanded_tasks.is_empty() {
+            tasks_col = tasks_col.push(
+                text("sin tareas — escribe algo arriba").color(MUTED).size(11)
+            );
+        } else {
+            for task in &self.expanded_tasks {
+                let (checkbox_char, checkbox_color, text_color) = if task.done {
+                    ("✓", GREEN, FG_DIM)
+                } else {
+                    ("□", MUTED, FG)
+                };
+
+                let checkbox = button(text(checkbox_char).color(checkbox_color).size(12))
+                    .on_press(Message::TaskToggled(task.line_index))
+                    .style(if task.done {
+                        checkbox_done_style
+                    } else {
+                        checkbox_undone_style
+                    })
+                    .padding(Padding { top: 2.0, right: 4.0, bottom: 2.0, left: 4.0 });
+
+                let is_editing = self.editing_line.as_ref()
+                    .map(|e| e.line_index == task.line_index)
+                    .unwrap_or(false);
+
+                let task_text_el: Element<'_, Message> = if is_editing {
+                    text_input("", &self.editing_line.as_ref().unwrap().value)
+                        .on_input(Message::LineEditChanged)
+                        .on_submit(Message::LineEditSubmitted)
+                        .style(edit_line_input_style)
+                        .width(Length::Fill)
+                        .size(11)
+                        .into()
+                } else {
+                    button(text(&task.text).color(text_color).size(11))
+                        .on_press(Message::LineEditStarted(task.line_index, true, task.done))
+                        .style(content_line_style)
+                        .padding(Padding { top: 1.0, right: 4.0, bottom: 1.0, left: 4.0 })
+                        .width(Length::Fill)
+                        .into()
+                };
+
+                let task_row = row![]
+                    .push(checkbox)
+                    .push(task_text_el)
+                    .spacing(6)
+                    .align_y(iced::Alignment::Center);
+
+                tasks_col = tasks_col.push(task_row);
+            }
+        }
+
+        let pending = self.expanded_tasks.iter().filter(|t| !t.done).count();
+        let completed = self.expanded_tasks.iter().filter(|t| t.done).count();
+
+        let footer = row![]
+            .push(text(format!("{} pend · {} completadas", pending, completed)).color(MUTED).size(10))
+            .push(Space::new().width(Length::Fill))
+            .push(
+                button(text("abrir en TUI →").color(PURPLE).size(10))
+                    .on_press(Message::TuiForNote(note_name))
+                    .style(footer_button_style)
+                    .padding(Padding::new(2.0))
+            )
+            .width(Length::Fill)
+            .align_y(iced::Alignment::Center);
+
+        let inner = panel_col
+            .push(tasks_col)
+            .push(Space::new().height(Length::Fixed(6.0)))
+            .push(footer);
+
+        let scroll = scrollable(inner)
+            .direction(scrollable::Direction::Vertical(
+                scrollable::Scrollbar::new()
+                    .width(3.0)
+                    .scroller_width(3.0)
+            ))
+            .style(scrollbar_style)
+            .height(Length::Fixed(200.0))
+            .width(Length::Fill);
+
+        container(scroll)
+            .style(expanded_panel_style)
+            .width(Length::Fill)
+            .padding(Padding::new(6.0))
             .into()
     }
 
@@ -558,8 +929,6 @@ impl Overlay {
                     .push(hint_kbd("Enter", "enviar"))
                     .push(text(" · ").color(MUTED).size(11))
                     .push(hint_kbd("Esc", "limpiar"))
-                    .push(text(" · ").color(MUTED).size(11))
-                    .push(hint_kbd("clic der", "opciones"))
                     .spacing(4)
                     .align_y(iced::Alignment::Center)
             }
@@ -648,13 +1017,6 @@ fn panel_bg_style(_: &Theme) -> container::Style {
     }
 }
 
-fn transparent_style(_: &Theme) -> container::Style {
-    container::Style {
-        background: Some(Background::Color(Color::TRANSPARENT)),
-        ..Default::default()
-    }
-}
-
 fn compact_input_style(_: &Theme) -> container::Style {
     container::Style {
         background: Some(Background::Color(BG)),
@@ -727,11 +1089,134 @@ fn selected_note_style(_: &Theme, status: iced::widget::button::Status) -> iced:
     }
 }
 
-fn ctx_inline_style(_: &Theme, _: iced::widget::button::Status) -> iced::widget::button::Style {
+fn expanded_note_style(_: &Theme, status: iced::widget::button::Status) -> iced::widget::button::Style {
+    let bg = match status {
+        iced::widget::button::Status::Hovered => Color { r: 29.0 / 255.0, g: 158.0 / 255.0, b: 117.0 / 255.0, a: 0.25 },
+        _ => Color { r: 29.0 / 255.0, g: 158.0 / 255.0, b: 117.0 / 255.0, a: 0.15 },
+    };
+    iced::widget::button::Style {
+        background: Some(Background::Color(bg)),
+        border: Border { color: Color { r: 29.0 / 255.0, g: 158.0 / 255.0, b: 117.0 / 255.0, a: 0.6 }, width: 1.0, radius: 6.0.into() },
+        text_color: FG,
+        ..Default::default()
+    }
+}
+
+fn dots_button_style(_: &Theme, status: iced::widget::button::Status) -> iced::widget::button::Style {
+    let color = match status {
+        iced::widget::button::Status::Hovered => Color { r: 1.0, g: 1.0, b: 1.0, a: 0.6 },
+        _ => Color { r: 1.0, g: 1.0, b: 1.0, a: 0.25 },
+    };
     iced::widget::button::Style {
         background: Some(Background::Color(Color::TRANSPARENT)),
         border: Border { color: Color::TRANSPARENT, width: 0.0, radius: 4.0.into() },
+        text_color: color,
+        ..Default::default()
+    }
+}
+
+fn expanded_panel_style(_: &Theme) -> container::Style {
+    container::Style {
+        background: Some(Background::Color(EXPANDED_BG)),
+        border: Border {
+            color: TASK_BORDER,
+            width: 0.5,
+            radius: iced::border::Radius { top_left: 0.0, top_right: 0.0, bottom_right: 8.0, bottom_left: 8.0 },
+        },
+        ..Default::default()
+    }
+}
+
+fn separator_style(_: &Theme) -> container::Style {
+    container::Style {
+        background: Some(Background::Color(Color { r: 1.0, g: 1.0, b: 1.0, a: 0.06 })),
+        ..Default::default()
+    }
+}
+
+fn scrollbar_style(_: &Theme, _status: scrollable::Status) -> scrollable::Style {
+    let scroller_color = match _status {
+        scrollable::Status::Hovered { .. } => Color { r: 1.0, g: 1.0, b: 1.0, a: 0.3 },
+        _ => Color { r: 1.0, g: 1.0, b: 1.0, a: 0.15 },
+    };
+    scrollable::Style {
+        container: container::Style {
+            background: Some(Background::Color(Color::TRANSPARENT)),
+            ..Default::default()
+        },
+        vertical_rail: scrollable::Rail {
+            background: None,
+            border: Border::default(),
+            scroller: scrollable::Scroller {
+                background: Background::Color(scroller_color),
+                border: Border::default(),
+            },
+        },
+        horizontal_rail: scrollable::Rail {
+            background: None,
+            border: Border::default(),
+            scroller: scrollable::Scroller {
+                background: Background::Color(scroller_color),
+                border: Border::default(),
+            },
+        },
+        gap: None,
+        auto_scroll: scrollable::AutoScroll {
+            background: Background::Color(Color::TRANSPARENT),
+            border: Border::default(),
+            shadow: Default::default(),
+            icon: Color::TRANSPARENT,
+        },
+    }
+}
+
+fn checkbox_done_style(_: &Theme, _: iced::widget::button::Status) -> iced::widget::button::Style {
+    iced::widget::button::Style {
+        background: Some(Background::Color(Color { r: 29.0 / 255.0, g: 158.0 / 255.0, b: 117.0 / 255.0, a: 0.3 })),
+        border: Border { color: GREEN, width: 1.0, radius: 3.0.into() },
+        text_color: GREEN,
+        ..Default::default()
+    }
+}
+
+fn checkbox_undone_style(_: &Theme, _: iced::widget::button::Status) -> iced::widget::button::Style {
+    iced::widget::button::Style {
+        background: Some(Background::Color(Color::TRANSPARENT)),
+        border: Border { color: Color { r: 1.0, g: 1.0, b: 1.0, a: 0.3 }, width: 1.0, radius: 3.0.into() },
         text_color: MUTED,
+        ..Default::default()
+    }
+}
+
+fn content_line_style(_: &Theme, status: iced::widget::button::Status) -> iced::widget::button::Style {
+    let bg = match status {
+        iced::widget::button::Status::Hovered => Color { r: 1.0, g: 1.0, b: 1.0, a: 0.04 },
+        _ => Color::TRANSPARENT,
+    };
+    iced::widget::button::Style {
+        background: Some(Background::Color(bg)),
+        border: Border { color: Color::TRANSPARENT, width: 0.0, radius: 0.0.into() },
+        text_color: FG,
+        ..Default::default()
+    }
+}
+
+fn edit_line_input_style(_: &Theme, _: iced::widget::text_input::Status) -> iced::widget::text_input::Style {
+    iced::widget::text_input::Style {
+        background: Background::Color(Color { r: 1.0, g: 1.0, b: 1.0, a: 0.06 }),
+        border: Border { color: Color { r: 137.0 / 255.0, g: 180.0 / 255.0, b: 250.0 / 255.0, a: 0.4 }, width: 1.0, radius: 0.0.into() },
+        icon: Color::TRANSPARENT,
+        placeholder: MUTED,
+        value: FG,
+        selection: Color { r: 137.0 / 255.0, g: 180.0 / 255.0, b: 250.0 / 255.0, a: 0.3 },
+    }
+}
+
+fn footer_button_style(_: &Theme, _: iced::widget::button::Status) -> iced::widget::button::Style {
+    iced::widget::button::Style {
+        background: Some(Background::Color(Color::TRANSPARENT)),
+        border: Border { color: Color::TRANSPARENT, width: 0.0, radius: 4.0.into() },
+        text_color: PURPLE,
         ..Default::default()
     }
 }

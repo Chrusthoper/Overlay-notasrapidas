@@ -192,10 +192,14 @@ overlay/
 ├──────────────────────────────────────┤
 │ [+ Nueva nota]              [⌨ TUI] │ 40px
 ├──────────────────────────────────────┤
-│ ● 📌 tareas           ✓ 2/5         │
-│ ● 📥 hoy 14h30  sesión               │ Variable
-│ ● ideas              hace 2m         │ (scroll)
-│ ● sprint             ayer            │
+│ ● 📌 tareas           ✓ 2/5    [···] │
+│ ┌─ panel expandido ────────────────┐ │
+│ │ [✓] Implementar búsqueda         │ │
+│ │ [□] Parser de front matter       │ │
+│ │ 1 pend · 1 completadas  TUI →   │ │
+│ └──────────────────────────────────┘ │
+│ ● 📥 hoy 14h30  sesión          [···]│ Variable
+│ ● ideas              hace 2m    [···]│ (scroll)
 ├──────────────────────────────────────┤
 │ [Enter] enviar · [Esc] limpiar       │ 32px
 └──────────────────────────────────────┘
@@ -209,9 +213,25 @@ Cada instancia del overlay crea una nota de sesión `inbox-YYYY-MM-DD-HHhMM.md`.
 
 - **Orden**: pinned primero → sesión activa → resto por mtime desc
 - **Filtro**: excluye notas en `hidden`
-- **Indicadores**: ● verde=seleccionada, ● azul=sesión, ● gris=otra
-- **Click simple**: cambia `selected_file` (destino del input)
-- **Botón ⋮**: abre menú contextual
+- **Indicadores**: ● verde=expandida, ● azul=sesión, ● gris=otra
+- **Click en nota**: expande/colapsa panel de tareas (accordion)
+- **Botón ···**: abre menú contextual
+
+## Panel Expandible (Accordion)
+
+Click en una nota expande un panel (200px max, scrollable) debajo de la fila:
+
+**Sección A — Contenido**: líneas no-tarea, no-front matter, no-vacías. Max 4 visibles, "··· X líneas más" si hay más. Click activa edición inline.
+
+**Separador**: 0.5px sutil solo si ambas secciones tienen contenido.
+
+**Sección B — Tareas**: checkbox clickeable (`□` → `✓`), toggle en el `.md`. Tareas completadas dimmed. Click en texto activa edición inline (checkbox NO).
+
+**Edición inline**: text_input reemplaza la línea. Enter guarda (preserva prefijo `- [ ]`/`- [x]`). Esc cancela. `replace_line()` en core.
+
+**Footer**: "X pend · Y completadas" + botón "abrir en TUI →"
+
+Scroll responde a rueda del mouse. Altura ventana ajusta via `SizeChange`.
 
 ## Menú Contextual
 
@@ -240,6 +260,6 @@ Ubicación: `~/.config/overlay/panel.json`
 
 ## Eventos y Subscriptions
 
-- **Escape**: cierra ctx_menu → cancela CreatingNote → limpia input + resetea a sesión
+- **Escape**: cancela edición inline → cierra ctx_menu → colapsa panel → cancela CreatingNote → limpia input + resetea a sesión
 - **Drag**: `CursorMoved` + `ButtonPressed(Left)` + `ButtonReleased(Left)` → `MarginChange` layer shell
 - **WAYLAND_DEBUG=0**: suprime warnings de protocolos no implementados
