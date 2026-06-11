@@ -1,4 +1,4 @@
-use iced::widget::{button, column, container, row, scrollable, text, text_input, Space};
+use iced::widget::{button, column, container, mouse_area, row, scrollable, text, text_input, Space};
 use iced::{Background, Border, Color, Element, Event, Length, Padding, Point, Task, Theme};
 use iced_layershell::build_pattern::application;
 use iced_layershell::reexport::{Anchor, KeyboardInteractivity, Layer};
@@ -175,6 +175,7 @@ enum Message {
     LineEditCancelled,
     TuiClicked,
     TuiForNote(String),
+    CloseClicked,
     NewNoteClicked,
     CreateNote,
     CancelCreate,
@@ -270,7 +271,7 @@ impl Overlay {
         let note_count = self.sorted_visible_notes().len() as u32;
         let list_height = note_count * 36;
         let panel_height = if self.expanded_note.is_some() { 200 } else { 0 };
-        let total = 40 + 40 + list_height + panel_height + 32;
+        let total = 20 + 40 + 40 + list_height + panel_height + 32;
         total.clamp(248, 520)
     }
 
@@ -423,6 +424,9 @@ impl Overlay {
             Message::TuiClicked => {
                 let _ = open_tui();
                 Task::none()
+            }
+            Message::CloseClicked => {
+                std::process::exit(0);
             }
             Message::TuiForNote(name) => {
                 let filename = format!("{}.md", name);
@@ -592,7 +596,20 @@ impl Overlay {
     }
 
     fn view(&self) -> Element<'_, Message> {
+        let close_btn = button(text("✕").color(MUTED).size(16))
+            .on_press(Message::CloseClicked)
+            .style(close_x_style)
+            .padding(Padding { top: 6.0, right: 8.0, bottom: 6.0, left: 8.0 });
+
+        let top_bar = row![]
+            .push(Space::new().width(Length::Fill))
+            .push(close_btn)
+            .width(Length::Fill)
+            .height(Length::Fixed(26.0))
+            .padding(Padding { top: 2.0, right: 8.0, bottom: 0.0, left: 0.0 });
+
         let mut content = column![]
+            .push(top_bar)
             .push(self.view_input())
             .push(self.view_actions())
             .push(self.view_note_list())
@@ -664,7 +681,7 @@ impl Overlay {
                     )
                     .push(Space::new().width(Length::Fill))
                     .push(
-                        button(text("⌨ TUI").color(GREEN).size(11))
+                        button(text("🗺 Canvas").color(GREEN).size(11))
                             .on_press(Message::TuiClicked)
                             .style(action_button_style)
                             .padding(Padding::new(6.0))
@@ -763,7 +780,10 @@ impl Overlay {
                 .spacing(4)
                 .align_y(iced::Alignment::Center);
 
-            col = col.push(row_el);
+            let row_with_ctx = mouse_area(row_el)
+                .on_right_press(Message::NoteCtxClicked(idx));
+
+            col = col.push(row_with_ctx);
 
             if is_expanded {
                 col = col.push(self.view_expanded_panel());
@@ -892,7 +912,7 @@ impl Overlay {
             .push(text(format!("{} pend · {} completadas", pending, completed)).color(MUTED).size(10))
             .push(Space::new().width(Length::Fill))
             .push(
-                button(text("abrir en TUI →").color(PURPLE).size(10))
+                button(text("abrir en Canvas →").color(PURPLE).size(10))
                     .on_press(Message::TuiForNote(note_name))
                     .style(footer_button_style)
                     .padding(Padding::new(2.0))
@@ -979,7 +999,7 @@ impl Overlay {
         } else {
             col = col
                 .push(text(format!("{}:", name)).color(BLUE).size(11))
-                .push(ctx_action("👁 Ver en TUI", Message::CtxViewTui(name.clone())))
+                .push(ctx_action("🗺 Ver en Canvas", Message::CtxViewTui(name.clone())))
                 .push(ctx_action(pin_label, Message::CtxPin(name.clone())))
                 .push(ctx_action("✕ Quitar del panel", Message::CtxHide(name.clone())))
                 .push(ctx_action("🗑 Eliminar nota", Message::CtxDelete(name.clone())));
@@ -1106,6 +1126,19 @@ fn dots_button_style(_: &Theme, status: iced::widget::button::Status) -> iced::w
     let color = match status {
         iced::widget::button::Status::Hovered => Color { r: 1.0, g: 1.0, b: 1.0, a: 0.6 },
         _ => Color { r: 1.0, g: 1.0, b: 1.0, a: 0.25 },
+    };
+    iced::widget::button::Style {
+        background: Some(Background::Color(Color::TRANSPARENT)),
+        border: Border { color: Color::TRANSPARENT, width: 0.0, radius: 4.0.into() },
+        text_color: color,
+        ..Default::default()
+    }
+}
+
+fn close_x_style(_: &Theme, status: iced::widget::button::Status) -> iced::widget::button::Style {
+    let color = match status {
+        iced::widget::button::Status::Hovered => Color { r: 243.0 / 255.0, g: 139.0 / 255.0, b: 168.0 / 255.0, a: 1.0 },
+        _ => MUTED,
     };
     iced::widget::button::Style {
         background: Some(Background::Color(Color::TRANSPARENT)),

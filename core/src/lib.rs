@@ -174,47 +174,26 @@ pub fn read_note(notes_dir: &PathBuf, filename: &str) -> Result<String, String> 
 }
 
 pub fn open_tui() -> Result<String, String> {
-    let tui_path = "/home/chs/notas/notas";
-    let terminal = std::env::var("TERM")
-        .unwrap_or_else(|_| "xterm".to_string());
+    let canvas_path = "/home/chs/notas/target/release/notas-canvas";
 
-    let result = Command::new("foot")
-        .args(["-e", tui_path])
-        .spawn()
-        .or_else(|_| {
-            Command::new(&terminal)
-                .args(["-e", tui_path])
-                .spawn()
-        })
-        .or_else(|_| {
-            Command::new("xterm")
-                .args(["-e", tui_path])
-                .spawn()
-        });
+    let result = Command::new(canvas_path)
+        .spawn();
 
     match result {
-        Ok(_) => Ok("TUI abierto".to_string()),
-        Err(e) => Err(format!("Error al abrir TUI: {}", e)),
+        Ok(_) => Ok("Canvas abierto".to_string()),
+        Err(e) => Err(format!("Error al abrir canvas: {}", e)),
     }
 }
 
 pub fn open_tui_with_file(filename: &str) -> Result<String, String> {
-    let tui_path = "/home/chs/notas/notas";
-    let notes_dir = "/home/chs/notas/notes";
-    let full_path = format!("{}/{}", notes_dir, filename);
+    let canvas_path = "/home/chs/notas/target/release/notas-canvas";
 
-    let result = Command::new("foot")
-        .args(["-e", "sh", "-c", &format!("{} {}", tui_path, full_path)])
-        .spawn()
-        .or_else(|_| {
-            Command::new("foot")
-                .args(["-e", tui_path])
-                .spawn()
-        });
+    let result = Command::new(canvas_path)
+        .spawn();
 
     match result {
-        Ok(_) => Ok("TUI abierto".to_string()),
-        Err(e) => Err(format!("Error al abrir TUI: {}", e)),
+        Ok(_) => Ok("Canvas abierto".to_string()),
+        Err(e) => Err(format!("Error al abrir canvas: {}", e)),
     }
 }
 
