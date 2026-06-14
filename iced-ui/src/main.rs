@@ -1,4 +1,4 @@
-use iced::widget::{button, column, container, mouse_area, row, scrollable, text, text_input, Space};
+use iced::widget::{button, column, container, mouse_area, row, scrollable, stack, text, text_input, Space};
 use iced::{Background, Border, Color, Element, Event, Length, Padding, Point, Task, Theme};
 use iced_layershell::build_pattern::application;
 use iced_layershell::reexport::{Anchor, KeyboardInteractivity, Layer};
@@ -22,10 +22,22 @@ const PURPLE: Color = Color { r: 137.0 / 255.0, g: 180.0 / 250.0, b: 250.0 / 255
 const EXPANDED_BG: Color = Color { r: 15.0 / 255.0, g: 15.0 / 255.0, b: 25.0 / 255.0, a: 0.97 };
 const TASK_BORDER: Color = Color { r: 137.0 / 255.0, g: 180.0 / 250.0, b: 250.0 / 255.0, a: 0.4 };
 
+const RESIZE_ZONE: f32 = 12.0;
+const RESIZE_CORNER: f32 = 20.0;
+const MIN_W: u32 = 300;
+const MAX_W: u32 = 800;
+const MIN_H: u32 = 200;
+const MAX_H: u32 = 600;
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum OverlayMode {
     Normal,
     CreatingNote,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+enum ResizeEdge {
+    N, S, E, W, NE, NW, SE, SW,
 }
 
 #[derive(Debug, Clone)]
@@ -61,6 +73,10 @@ struct PanelState {
     pinned: Vec<String>,
     #[serde(default)]
     hidden: Vec<String>,
+    #[serde(default)]
+    window_w: u32,
+    #[serde(default)]
+    window_h: u32,
 }
 
 fn panel_path() -> std::path::PathBuf {
@@ -79,7 +95,7 @@ fn load_panel() -> PanelState {
         .unwrap_or_default()
 }
 
-fn save_panel(pinned: &[String], hidden: &[String]) {
+fn save_panel(pinned: &[String], hidden: &[String], window_size: (u32, u32)) {
     let path = panel_path();
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
@@ -87,6 +103,8 @@ fn save_panel(pinned: &[String], hidden: &[String]) {
     let state = PanelState {
         pinned: pinned.to_vec(),
         hidden: hidden.to_vec(),
+        window_w: window_size.0,
+        window_h: window_size.1,
     };
     let _ = std::fs::write(&path, serde_json::to_string_pretty(&state).unwrap_or_default());
 }
@@ -189,6 +207,9 @@ enum Message {
     DragStarted,
     DragMoved(f32, f32),
     DragEnded,
+    DragHover(bool),
+    ResizeStarted(ResizeEdge),
+    ResizeEnded,
 }
 
 struct Overlay {
@@ -207,8 +228,12 @@ struct Overlay {
     expanded_content_lines: Vec<ContentLine>,
     editing_line: Option<EditingLine>,
     dragging: bool,
-    drag_origin: Point,
-    drag_margin_start: (i32, i32, i32, i32),
+    drag_hovered: bool,
+    window_size: (u32, u32),
+    resizing: Option<ResizeEdge>,
+    resize_origin: Point,
+    resize_size_start: (u32, u32),
+    resize_margin_start: (i32, i32),
     margin: (i32, i32, i32, i32),
     last_cursor: Point,
 }
@@ -237,8 +262,15 @@ impl Overlay {
             expanded_content_lines: Vec::new(),
             editing_line: None,
             dragging: false,
-            drag_origin: Point::default(),
-            drag_margin_start: (0, 0, 0, 0),
+            drag_hovered: false,
+            window_size: (
+                if panel.window_w > 0 { panel.window_w.clamp(MIN_W, MAX_W) } else { 428 },
+                if panel.window_h > 0 { panel.window_h.clamp(MIN_H, MAX_H) } else { 280 },
+            ),
+            resizing: None,
+            resize_origin: Point::default(),
+            resize_size_start: (0, 0),
+            resize_margin_start: (0, 0),
             margin: (0, 0, 0, 0),
             last_cursor: Point::default(),
         }
@@ -270,9 +302,20 @@ impl Overlay {
     fn calc_window_height(&self) -> u32 {
         let note_count = self.sorted_visible_notes().len() as u32;
         let list_height = note_count * 36;
-        let panel_height = if self.expanded_note.is_some() { 200 } else { 0 };
-        let total = 20 + 40 + 40 + list_height + panel_height + 32;
-        total.clamp(248, 520)
+        let panel_height = if self.expanded_note.is_some() {
+            let content_lines: u32 = self.expanded_content_lines.iter()
+                .map(|l| if l.text.len() > 50 { 36 } else { 18 })
+                .sum();
+            let task_lines: u32 = self.expanded_tasks.len() as u32 * 24;
+            let base: u32 = 30 + 20;
+            (base + content_lines + task_lines).clamp(200, 400)
+        } else {
+            0
+        };
+        let total = 26 + 40 + 40 + list_height + panel_height + 32;
+        let height = total.clamp(248, 520);
+        eprintln!("[HEIGHT] calc={} notes={} panel={}", height, note_count, panel_height);
+        height
     }
 
     fn refresh_notes(&mut self) {
@@ -478,13 +521,13 @@ impl Overlay {
                 } else {
                     self.pinned.push(name);
                 }
-                save_panel(&self.pinned, &self.hidden);
+                save_panel(&self.pinned, &self.hidden, self.window_size);
                 self.ctx_menu = None;
                 Task::none()
             }
             Message::CtxHide(name) => {
                 self.hidden.push(name);
-                save_panel(&self.pinned, &self.hidden);
+                save_panel(&self.pinned, &self.hidden, self.window_size);
                 self.ctx_menu = None;
                 Task::none()
             }
@@ -507,7 +550,7 @@ impl Overlay {
                 }
                 self.pinned.retain(|n| n != &name);
                 self.hidden.retain(|n| n != &name);
-                save_panel(&self.pinned, &self.hidden);
+                save_panel(&self.pinned, &self.hidden, self.window_size);
                 self.refresh_notes();
                 self.ctx_menu = None;
                 Task::none()
@@ -518,12 +561,51 @@ impl Overlay {
             }
             Message::DragStarted => {
                 self.dragging = true;
-                self.drag_origin = self.last_cursor;
-                self.drag_margin_start = self.margin;
                 Task::none()
             }
             Message::DragMoved(x, y) => {
-                if self.dragging {
+                if let Some(ref edge) = self.resizing {
+                    let dx = (x - self.resize_origin.x) as i32;
+                    let dy = (y - self.resize_origin.y) as i32;
+                    let (sw, sh) = self.resize_size_start;
+                    let (sm_t, sm_r) = self.resize_margin_start;
+                    let (mut new_w, mut new_h) = (sw as i32, sh as i32);
+                    let mut mt = sm_t;
+                    let mut mr = sm_r;
+
+                    let north = *edge == ResizeEdge::N || *edge == ResizeEdge::NE || *edge == ResizeEdge::NW;
+                    let south = *edge == ResizeEdge::S || *edge == ResizeEdge::SE || *edge == ResizeEdge::SW;
+                    let east = *edge == ResizeEdge::E || *edge == ResizeEdge::NE || *edge == ResizeEdge::SE;
+                    let west = *edge == ResizeEdge::W || *edge == ResizeEdge::NW || *edge == ResizeEdge::SW;
+
+                    // Anchor::Top|Right — right edge is fixed
+                    if north {
+                        new_h = (sh as i32 - dy).clamp(MIN_H as i32, MAX_H as i32);
+                        mt = sm_t + (sh as i32 - new_h);
+                    }
+                    if south {
+                        new_h = (sh as i32 + dy).clamp(MIN_H as i32, MAX_H as i32);
+                    }
+                    if east {
+                        // Right edge fixed — increasing width pushes left edge left via margin
+                        new_w = (sw as i32 + dx).clamp(MIN_W as i32, MAX_W as i32);
+                        mr = sm_r + (new_w - sw as i32);
+                    }
+                    if west {
+                        // Left edge moves — width shrinks as left edge moves right
+                        new_w = (sw as i32 - dx).clamp(MIN_W as i32, MAX_W as i32);
+                        mr = sm_r + (new_w - sw as i32);
+                    }
+
+                    self.window_size = (new_w as u32, new_h as u32);
+                    self.margin = (mt.max(0), mr.max(0), 0, 0);
+                    eprintln!("[RESIZE] edge={:?} dx={} dy={} new_w={} new_h={} margin={:?}", edge, dx, dy, new_w, new_h, self.margin);
+                    self.last_cursor = Point { x, y };
+                    Task::batch(vec![
+                        Task::done(Message::SizeChange(self.window_size)),
+                        Task::done(Message::MarginChange(self.margin)),
+                    ])
+                } else if self.dragging {
                     let dx = (x - self.last_cursor.x) as i32;
                     let dy = (y - self.last_cursor.y) as i32;
                     self.margin = (
@@ -540,7 +622,29 @@ impl Overlay {
                 }
             }
             Message::DragEnded => {
+                if self.resizing.is_some() {
+                    save_panel(&self.pinned, &self.hidden, self.window_size);
+                }
                 self.dragging = false;
+                self.resizing = None;
+                Task::none()
+            }
+            Message::DragHover(hovered) => {
+                self.drag_hovered = hovered;
+                Task::none()
+            }
+            Message::ResizeStarted(edge) => {
+                self.resizing = Some(edge);
+                self.resize_origin = self.last_cursor;
+                self.resize_size_start = self.window_size;
+                self.resize_margin_start = (self.margin.0, self.margin.1);
+                Task::none()
+            }
+            Message::ResizeEnded => {
+                if self.resizing.is_some() {
+                    save_panel(&self.pinned, &self.hidden, self.window_size);
+                }
+                self.resizing = None;
                 Task::none()
             }
             _ => Task::none(),
@@ -583,10 +687,6 @@ impl Overlay {
                 Some(Message::DragMoved(position.x, position.y))
             }
 
-            Event::Mouse(MouseEvent::ButtonPressed(mouse::Button::Left)) => {
-                Some(Message::DragStarted)
-            }
-
             Event::Mouse(MouseEvent::ButtonReleased(mouse::Button::Left)) => {
                 Some(Message::DragEnded)
             }
@@ -601,12 +701,48 @@ impl Overlay {
             .style(close_x_style)
             .padding(Padding { top: 6.0, right: 8.0, bottom: 6.0, left: 8.0 });
 
+        let drag_alpha = if self.dragging {
+            0.55
+        } else if self.drag_hovered {
+            0.35
+        } else {
+            0.18
+        };
+        let drag_bar = mouse_area(
+            container(
+                row![
+                    Space::new().width(Length::Fill).height(Length::Shrink),
+                    container(Space::new().width(28.0).height(3.0))
+                        .style(move |_: &Theme| container::Style {
+                            background: Some(Background::Color(
+                                Color { r: 1.0, g: 1.0, b: 1.0, a: drag_alpha }
+                            )),
+                            border: Border {
+                                radius: 2.0.into(),
+                                ..Default::default()
+                            },
+                            ..Default::default()
+                        }),
+                    Space::new().width(Length::Fill).height(Length::Shrink),
+                ]
+                .align_y(iced::Alignment::Center)
+            )
+            .height(Length::Fixed(20.0))
+            .center_y(Length::Fixed(20.0))
+            .width(Length::Fill)
+        )
+        .on_press(Message::DragStarted)
+        .on_release(Message::DragEnded)
+        .on_enter(Message::DragHover(true))
+        .on_exit(Message::DragHover(false));
+
         let top_bar = row![]
+            .push(drag_bar)
             .push(Space::new().width(Length::Fill))
             .push(close_btn)
             .width(Length::Fill)
             .height(Length::Fixed(26.0))
-            .padding(Padding { top: 2.0, right: 8.0, bottom: 0.0, left: 0.0 });
+            .padding(Padding { top: 2.0, right: 8.0, bottom: 0.0, left: 8.0 });
 
         let mut content = column![]
             .push(top_bar)
@@ -624,8 +760,39 @@ impl Overlay {
             content = content.push(self.view_ctx_menu());
         }
 
-        container(content)
+        let main_content = container(content)
             .style(panel_bg_style)
+            .width(Length::Fill)
+            .height(Length::Fill);
+
+        // Resize zones overlaid on edges/corners
+        let z_n  = container(resize_zone(ResizeEdge::N)).width(Length::Fill).height(Length::Fixed(RESIZE_ZONE));
+        let z_s  = container(resize_zone(ResizeEdge::S)).width(Length::Fill).height(Length::Fixed(RESIZE_ZONE));
+        let z_e  = container(resize_zone(ResizeEdge::E)).width(Length::Fixed(RESIZE_ZONE)).height(Length::Fill);
+        let z_w  = container(resize_zone(ResizeEdge::W)).width(Length::Fixed(RESIZE_ZONE)).height(Length::Fill);
+        let z_ne = container(resize_zone(ResizeEdge::NE)).width(Length::Fixed(RESIZE_CORNER)).height(Length::Fixed(RESIZE_CORNER));
+        let z_nw = container(resize_zone(ResizeEdge::NW)).width(Length::Fixed(RESIZE_CORNER)).height(Length::Fixed(RESIZE_CORNER));
+        let z_se = container(resize_zone(ResizeEdge::SE)).width(Length::Fixed(RESIZE_CORNER)).height(Length::Fixed(RESIZE_CORNER));
+        let z_sw = container(resize_zone(ResizeEdge::SW)).width(Length::Fixed(RESIZE_CORNER)).height(Length::Fixed(RESIZE_CORNER));
+
+        // Layout: top row (NW, N, NE), middle (W, content, E), bottom (SW, S, SE)
+        let top_resize = row![z_nw, z_n, z_ne]
+            .width(Length::Fill)
+            .height(Length::Shrink)
+            .align_y(iced::Alignment::Center);
+        let mid_resize = row![z_w, Space::new().width(Length::Fill).height(Length::Fill), z_e]
+            .width(Length::Fill)
+            .height(Length::Fill);
+        let bot_resize = row![z_sw, z_s, z_se]
+            .width(Length::Fill)
+            .height(Length::Shrink)
+            .align_y(iced::Alignment::Center);
+
+        let resize_overlay = column![top_resize, mid_resize, bot_resize]
+            .width(Length::Fill)
+            .height(Length::Fill);
+
+        stack![main_content, resize_overlay]
             .width(Length::Fill)
             .height(Length::Fill)
             .into()
@@ -824,7 +991,13 @@ impl Overlay {
                         .size(11);
                     content_col = content_col.push(input);
                 } else {
-                    let line_btn = button(text(&cl.text).color(FG_DIM).size(11))
+                    let line_btn = button(
+                        container(
+                            text(&cl.text).color(FG_DIM).size(11)
+                                .wrapping(text::Wrapping::WordOrGlyph)
+                        )
+                        .width(Length::Fill)
+                    )
                         .on_press(Message::LineEditStarted(cl.line_index, false, false))
                         .style(content_line_style)
                         .width(Length::Fill)
@@ -887,7 +1060,13 @@ impl Overlay {
                         .size(11)
                         .into()
                 } else {
-                    button(text(&task.text).color(text_color).size(11))
+                    button(
+                        container(
+                            text(&task.text).color(text_color).size(11)
+                                .wrapping(text::Wrapping::WordOrGlyph)
+                        )
+                        .width(Length::Fill)
+                    )
                         .on_press(Message::LineEditStarted(task.line_index, true, task.done))
                         .style(content_line_style)
                         .padding(Padding { top: 1.0, right: 4.0, bottom: 1.0, left: 4.0 })
@@ -899,7 +1078,7 @@ impl Overlay {
                     .push(checkbox)
                     .push(task_text_el)
                     .spacing(6)
-                    .align_y(iced::Alignment::Center);
+                    .align_y(iced::Alignment::Start);
 
                 tasks_col = tasks_col.push(task_row);
             }
@@ -1311,8 +1490,40 @@ fn relative_time(ts: u64) -> String {
     format!("hace {}d", diff / 86400)
 }
 
+fn resize_zone(edge: ResizeEdge) -> Element<'static, Message> {
+    let (w, h) = match edge {
+        ResizeEdge::N  => (Length::Fill, Length::Fixed(RESIZE_ZONE)),
+        ResizeEdge::S  => (Length::Fill, Length::Fixed(RESIZE_ZONE)),
+        ResizeEdge::E  => (Length::Fixed(RESIZE_ZONE), Length::Fill),
+        ResizeEdge::W  => (Length::Fixed(RESIZE_ZONE), Length::Fill),
+        ResizeEdge::NE => (Length::Fixed(RESIZE_CORNER), Length::Fixed(RESIZE_CORNER)),
+        ResizeEdge::NW => (Length::Fixed(RESIZE_CORNER), Length::Fixed(RESIZE_CORNER)),
+        ResizeEdge::SE => (Length::Fixed(RESIZE_CORNER), Length::Fixed(RESIZE_CORNER)),
+        ResizeEdge::SW => (Length::Fixed(RESIZE_CORNER), Length::Fixed(RESIZE_CORNER)),
+    };
+
+    mouse_area(
+        container(Space::new().width(w).height(h))
+            .style(resize_zone_style)
+    )
+    .on_press(Message::ResizeStarted(edge))
+    .on_release(Message::ResizeEnded)
+    .into()
+}
+
+fn resize_zone_style(_: &Theme) -> container::Style {
+    container::Style {
+        background: Some(Background::Color(Color::TRANSPARENT)),
+        ..Default::default()
+    }
+}
+
 fn main() -> iced_layershell::Result {
     std::env::set_var("WAYLAND_DEBUG", "0");
+
+    let panel = load_panel();
+    let init_w = if panel.window_w > 0 { panel.window_w.clamp(MIN_W, MAX_W) } else { 428 };
+    let init_h = if panel.window_h > 0 { panel.window_h.clamp(MIN_H, MAX_H) } else { 280 };
 
     application(
         Overlay::new,
@@ -1322,7 +1533,7 @@ fn main() -> iced_layershell::Result {
     )
     .subscription(Overlay::subscription)
     .layer_settings(LayerShellSettings {
-        size: Some((428, 248)),
+        size: Some((init_w, init_h)),
         anchor: Anchor::Top | Anchor::Right,
         layer: Layer::Overlay,
         keyboard_interactivity: KeyboardInteractivity::OnDemand,

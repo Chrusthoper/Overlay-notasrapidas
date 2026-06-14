@@ -184,10 +184,12 @@ overlay/
 └── ARCHITECTURE.md
 ```
 
-## Layout — 4 Secciones
+## Layout — 5 Secciones + Resize Zones
 
 ```
 ┌──────────────────────────────────────┐
+│ [  ·····  ]                    [✕]   │ 26px (drag bar + close)
+├──────────────────────────────────────┤
 │ ❯ [input]          → destino-actual  │ 40px
 ├──────────────────────────────────────┤
 │ [+ Nueva nota]              [⌨ TUI] │ 40px
@@ -253,13 +255,23 @@ Acciones por nota:
 ```json
 {
   "pinned": ["tareas", "proyecto"],
-  "hidden": ["bienvenida"]
+  "hidden": ["bienvenida"],
+  "window_w": 428,
+  "window_h": 280
 }
 ```
 Ubicación: `~/.config/overlay/panel.json`
 
+## Drag & Resize
+
+**Drag**: La drag bar (pastilla centrada de 28×3px en la top bar) dispara `DragStarted` via `mouse_area.on_press`. Solo esa zona inicia drag. La subscription global captura `CursorMoved` para movimiento continuo y `ButtonReleased(Left)` para soltar. El margen se ajusta via `MarginChange` con deltas incrementales.
+
+**Resize**: 8 zonas transparentes (bordes 6px, esquinas 12px) superpuestas via `stack`. Cada zona es un `mouse_area` que dispara `ResizeStarted(ResizeEdge)`. El handler `DragMoved` detecta si `resizing.is_some()` y calcula nuevo tamaño + margen según el edge. Límites: ancho 300-800px, alto 200-600px. El tamaño se persiste en `panel.json`.
+
+**Estado**: `window_size (u32, u32)`, `resizing: Option<ResizeEdge>`, `resize_origin: Point`, `resize_size_start: (u32, u32)`.
+
 ## Eventos y Subscriptions
 
 - **Escape**: cancela edición inline → cierra ctx_menu → colapsa panel → cancela CreatingNote → limpia input + resetea a sesión
-- **Drag**: `CursorMoved` + `ButtonPressed(Left)` + `ButtonReleased(Left)` → `MarginChange` layer shell
+- **Drag/Resize**: `CursorMoved` → `DragMoved` (shared handler), `ButtonReleased(Left)` → `DragEnded` (termina ambos drag y resize)
 - **WAYLAND_DEBUG=0**: suprime warnings de protocolos no implementados
